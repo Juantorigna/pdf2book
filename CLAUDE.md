@@ -57,7 +57,15 @@ python slides_to_book.py input.pdf output.md
 python slides_to_book.py input.pdf output.md --docx
 python slides_to_book.py input.pdf output.md --min-ratio 0.4
 python slides_to_book.py input.pdf output.md --no-images
+
+# multiple PDFs are concatenated, in order, into one output
+python slides_to_book.py lesson1.pdf lesson2.pdf lesson3.pdf book.md --docx
 ```
+
+Each source PDF is processed independently (its own boilerplate/footer
+stripping, its own title-repetition state), so unrelated decks don't bleed
+into each other. With more than one input, each source is preceded by a
+top-level `# <filename>` heading in the merged output.
 
 ## Known limitations
 
@@ -86,5 +94,6 @@ python slides_to_book.py input.pdf output.md --no-images
   number (e.g. footers with a changing date).
 - Reading-order reconstruction for multi-column slides (cluster by x0
   ranges before grouping by top position).
-- CLI batch mode: process a directory of PDFs into one merged book.
+- Directory input (glob a folder of PDFs) instead of listing each file —
+  multi-file concatenation itself is already supported.
 - Configurable render resolution / image width for `--docx` output.
