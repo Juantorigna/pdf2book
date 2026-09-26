@@ -166,9 +166,10 @@ def cluster_bbox(cluster):
 class ImageRenderer:
     """Lazily rasterizes pages and saves padded crops as PNG files."""
 
-    def __init__(self, pdf_path, image_dir, resolution=RENDER_RESOLUTION):
+    def __init__(self, pdf_path, image_dir, filename_prefix="", resolution=RENDER_RESOLUTION):
         self.pdf = pdfplumber.open(pdf_path)
         self.image_dir = image_dir
+        self.filename_prefix = filename_prefix
         self.resolution = resolution
         self.scale = resolution / 72
         self._page_images = {}
@@ -198,7 +199,7 @@ class ImageRenderer:
 
         os.makedirs(self.image_dir, exist_ok=True)
         self._counters[page_index] += 1
-        filename = f"p{page_index + 1:03d}_{self._counters[page_index]:02d}.png"
+        filename = f"{self.filename_prefix}p{page_index + 1:03d}_{self._counters[page_index]:02d}.png"
         path = os.path.join(self.image_dir, filename)
         cropped.save(path)
         return path
@@ -263,43 +264,68 @@ def relative_path(path, output_path):
     return os.path.relpath(path, start=os.path.dirname(os.path.abspath(output_path)) or ".")
 
 
-def write_markdown(slides, output_path):
+def write_markdown(docs, output_path):
     with open(output_path, "w", encoding="utf-8") as f:
-        for titles, items in slides:
-            for title in titles:
-                f.write(f"## {title}\n\n")
-            for item in items:
-                if item["kind"] == "bullet":
-                    f.write(f"- {item['text']}\n")
-                else:
-                    rel = relative_path(item["path"], output_path)
-                    f.write(f"\n![]({rel})\n\n")
-            f.write("\n")
+        for doc_heading, slides in docs:
+            if doc_heading is not None:
+                f.write(f"# {doc_heading}\n\n")
+            for titles, items in slides:
+                for title in titles:
+                    f.write(f"## {title}\n\n")
+                for item in items:
+                    if item["kind"] == "bullet":
+                        f.write(f"- {item['text']}\n")
+                    else:
+                        rel = relative_path(item["path"], output_path)
+                        f.write(f"\n![]({rel})\n\n")
+                f.write("\n")
 
 
-def write_docx(slides, output_path):
+def write_docx(docs, output_path):
     from docx import Document
     from docx.shared import Inches
     from PIL import Image
 
     max_width_in = 6.0
     document = Document()
-    for titles, items in slides:
-        for title in titles:
-            document.add_paragraph(title, style="Heading 2")
-        for item in items:
-            if item["kind"] == "bullet":
-                document.add_paragraph(item["text"], style="List Bullet")
-            else:
-                with Image.open(item["path"]) as im:
-                    width_in = im.width / RENDER_RESOLUTION
-                document.add_picture(item["path"], width=Inches(min(width_in, max_width_in)))
+    for doc_heading, slides in docs:
+        if doc_heading is not None:
+            document.add_paragraph(doc_heading, style="Heading 1")
+        for titles, items in slides:
+            for title in titles:
+                document.add_paragraph(title, style="Heading 2")
+            for item in items:
+                if item["kind"] == "bullet":
+                    document.add_paragraph(item["text"], style="List Bullet")
+                else:
+                    with Image.open(item["path"]) as im:
+                        width_in = im.width / RENDER_RESOLUTION
+                    document.add_picture(item["path"], width=Inches(min(width_in, max_width_in)))
     document.save(output_path)
+
+
+def process_pdf(pdf_path, min_ratio, image_dir, filename_prefix, use_images):
+    pages, page_images, page_heights = extract_page_lines(pdf_path)
+    pages, footer_tops = clean_pages(pages, min_ratio, page_heights)
+
+    renderer = None
+    if use_images:
+        renderer = ImageRenderer(pdf_path, image_dir, filename_prefix=filename_prefix)
+
+    try:
+        return build_slides(pages, page_images, footer_tops, renderer)
+    finally:
+        if renderer is not None:
+            renderer.close()
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("input_pdf", help="Path to the slide-deck PDF")
+    parser.add_argument(
+        "input_pdfs",
+        nargs="+",
+        help="Path(s) to the slide-deck PDF(s). Multiple PDFs are concatenated, in order, into one output",
+    )
     parser.add_argument("output", help="Path to the output Markdown (or .docx) file")
     parser.add_argument(
         "--docx",
@@ -319,28 +345,25 @@ def main():
     )
     args = parser.parse_args()
 
-    pages, page_images, page_heights = extract_page_lines(args.input_pdf)
-    pages, footer_tops = clean_pages(pages, args.min_ratio, page_heights)
+    multi = len(args.input_pdfs) > 1
+    image_dir = os.path.splitext(args.output)[0] + "_images"
 
-    renderer = None
-    if not args.no_images:
-        image_dir = os.path.splitext(args.output)[0] + "_images"
-        renderer = ImageRenderer(args.input_pdf, image_dir)
+    docs = []
+    for index, pdf_path in enumerate(args.input_pdfs):
+        prefix = f"d{index + 1}_" if multi else ""
+        slides = process_pdf(pdf_path, args.min_ratio, image_dir, prefix, not args.no_images)
+        heading = os.path.splitext(os.path.basename(pdf_path))[0] if multi else None
+        docs.append((heading, slides))
 
-    try:
-        slides = build_slides(pages, page_images, footer_tops, renderer)
-        write_markdown(slides, args.output)
+    write_markdown(docs, args.output)
 
-        if args.docx:
-            docx_path = args.output
-            if docx_path.lower().endswith(".md"):
-                docx_path = docx_path[: -len(".md")] + ".docx"
-            elif not docx_path.lower().endswith(".docx"):
-                docx_path = docx_path + ".docx"
-            write_docx(slides, docx_path)
-    finally:
-        if renderer is not None:
-            renderer.close()
+    if args.docx:
+        docx_path = args.output
+        if docx_path.lower().endswith(".md"):
+            docx_path = docx_path[: -len(".md")] + ".docx"
+        elif not docx_path.lower().endswith(".docx"):
+            docx_path = docx_path + ".docx"
+        write_docx(docs, docx_path)
 
 
 if __name__ == "__main__":
