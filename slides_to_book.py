@@ -241,13 +241,21 @@ def build_slide_items(lines, images, page_index, renderer, footer_top):
 
 
 def build_slides(pages, page_images, footer_tops, renderer):
+    """Build (titles, items) per slide. When a slide's title(s) exactly match
+    the previous slide's, the heading is suppressed (titles becomes []) so the
+    repeated title doesn't print again — its content just continues under the
+    last-printed heading, until a genuinely new title appears."""
     slides = []
+    last_titles = None
     for page_index, lines in enumerate(pages):
         images = page_images[page_index] if renderer is not None else []
         titles, items = build_slide_items(lines, images, page_index, renderer, footer_tops[page_index])
         if not titles and not items:
             continue
-        slides.append((titles, items))
+        display_titles = [] if titles and titles == last_titles else titles
+        if titles:
+            last_titles = titles
+        slides.append((display_titles, items))
     return slides
 
 
