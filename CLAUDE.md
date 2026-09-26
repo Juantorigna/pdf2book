@@ -60,12 +60,21 @@ python slides_to_book.py input.pdf output.md --no-images
 
 # multiple PDFs are concatenated, in order, into one output
 python slides_to_book.py lesson1.pdf lesson2.pdf lesson3.pdf book.md --docx
+
+# add a new pack of slides onto an already-existing output, instead of
+# overwriting it (works with output.md, an existing output.docx, or both)
+python slides_to_book.py lesson4.pdf book.md --docx --append
+python slides_to_book.py lesson4.pdf lesson5.pdf MyExistingNotes.docx --docx --append
 ```
 
 Each source PDF is processed independently (its own boilerplate/footer
 stripping, its own title-repetition state), so unrelated decks don't bleed
-into each other. With more than one input, each source is preceded by a
-top-level `# <filename>` heading in the merged output.
+into each other. A per-source `# <filename>` heading is added whenever more
+than one deck ends up in the same output — either because multiple PDFs
+were given in one call, or because `--append` is adding to a book that
+already has earlier content. `--append` adds a `---` separator in
+Markdown / a page break in Word before the new content; if the target
+file doesn't exist yet, `--append` just creates it normally.
 
 ## Known limitations
 
