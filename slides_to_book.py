@@ -26,6 +26,12 @@ CLUSTER_GAP_MIN = 3.0
 RENDER_RESOLUTION = 200  # dpi used when rasterizing math/image regions
 CROP_PAD = 4  # points of padding around a cropped region
 
+NON_ALNUM_RE = re.compile(r"[^A-Za-z0-9]+")
+
+
+def sanitize_filename_component(name):
+    return NON_ALNUM_RE.sub("_", name).strip("_") or "doc"
+
 
 def extract_page_lines(pdf_path):
     """Return a list of pages, each a list of line dicts with text/size/bbox,
@@ -264,8 +270,11 @@ def relative_path(path, output_path):
     return os.path.relpath(path, start=os.path.dirname(os.path.abspath(output_path)) or ".")
 
 
-def write_markdown(docs, output_path):
-    with open(output_path, "w", encoding="utf-8") as f:
+def write_markdown(docs, output_path, append=False):
+    mode = "a" if append and os.path.exists(output_path) else "w"
+    with open(output_path, mode, encoding="utf-8") as f:
+        if mode == "a":
+            f.write("\n---\n\n")
         for doc_heading, slides in docs:
             if doc_heading is not None:
                 f.write(f"# {doc_heading}\n\n")
@@ -281,13 +290,17 @@ def write_markdown(docs, output_path):
                 f.write("\n")
 
 
-def write_docx(docs, output_path):
+def write_docx(docs, output_path, append=False):
     from docx import Document
     from docx.shared import Inches
     from PIL import Image
 
     max_width_in = 6.0
-    document = Document()
+    if append and os.path.exists(output_path):
+        document = Document(output_path)
+        document.add_page_break()
+    else:
+        document = Document()
     for doc_heading, slides in docs:
         if doc_heading is not None:
             document.add_paragraph(doc_heading, style="Heading 1")
@@ -343,27 +356,50 @@ def main():
         action="store_true",
         help="Skip rasterizing math regions and embedded images; output plain extracted text only",
     )
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Append to output/--docx files instead of overwriting, if they already exist",
+    )
     args = parser.parse_args()
 
-    multi = len(args.input_pdfs) > 1
+    # A per-source heading disambiguates decks whenever more than one is
+    # combined in the book, whether that's several PDFs in this call or one
+    # PDF being appended onto a book built from earlier calls.
+    multi = len(args.input_pdfs) > 1 or args.append
     image_dir = os.path.splitext(args.output)[0] + "_images"
 
     docs = []
-    for index, pdf_path in enumerate(args.input_pdfs):
-        prefix = f"d{index + 1}_" if multi else ""
+    seen_stems = Counter()
+    for pdf_path in args.input_pdfs:
+        stem = os.path.splitext(os.path.basename(pdf_path))[0]
+        seen_stems[stem] += 1
+        # Disambiguate the same filename passed more than once in this call;
+        # a stem-based prefix (rather than a plain positional index) is what
+        # keeps image filenames from colliding across separate --append runs.
+        unique_stem = stem if seen_stems[stem] == 1 else f"{stem}_{seen_stems[stem]}"
+        prefix = f"{sanitize_filename_component(unique_stem)}_" if multi else ""
         slides = process_pdf(pdf_path, args.min_ratio, image_dir, prefix, not args.no_images)
-        heading = os.path.splitext(os.path.basename(pdf_path))[0] if multi else None
-        docs.append((heading, slides))
+        docs.append((stem if multi else None, slides))
 
-    write_markdown(docs, args.output)
-
+    docx_path = None
     if args.docx:
         docx_path = args.output
         if docx_path.lower().endswith(".md"):
             docx_path = docx_path[: -len(".md")] + ".docx"
         elif not docx_path.lower().endswith(".docx"):
             docx_path = docx_path + ".docx"
-        write_docx(docs, docx_path)
+
+    # If --output was itself given as the .docx path, docx_path and output
+    # are the same file: only write the docx, since writing plain-text
+    # Markdown into that same path first would destroy it before write_docx
+    # gets a chance to open it (in --append mode) or would just leave a
+    # bogus non-docx file behind (otherwise).
+    same_path = docx_path is not None and os.path.abspath(docx_path) == os.path.abspath(args.output)
+    if not same_path:
+        write_markdown(docs, args.output, append=args.append)
+    if docx_path is not None:
+        write_docx(docs, docx_path, append=args.append)
 
 
 if __name__ == "__main__":
