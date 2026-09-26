@@ -21,15 +21,33 @@ Pipeline:
    trailing page-number token (`3`, `3/20`, ...) from the end of the line,
    so a footer that differs only by an embedded slide number is still
    caught.
-4. Page-number-only lines (`3`, `3/20`) are stripped via regex.
+4. Page-number-only lines (`3`, `3/20`) are stripped via regex, but only
+   inside the bottom ~15% of the page — a bare digit is also how Beamer
+   renders `enumerate` list markers in the middle of a slide, and those are
+   real content, not a page number.
 5. Title detection: on each page, the line(s) at the page's max font size
-   become the heading; everything smaller becomes bullet body text.
-6. Output: Markdown (`## title` + `- bullet` per slide). Optional `--docx`
-   flag also writes a Word file using `Heading 2` + `List Bullet` styles.
+   become the heading; everything else is body content.
+6. Math/diagram fidelity: PDF math (fractions, matrices, sub/superscripts)
+   is a 2D arrangement of glyphs, not linear text — extracting it as text
+   and reading top-to-bottom produces nonsense. So each slide's remaining
+   lines are clustered into visual paragraphs (by vertical gap), and any
+   cluster containing a math signal (a non-ASCII math/Greek symbol, an
+   isolated operator token, or an off-size sub/superscript line) is
+   rasterized straight from the PDF page and embedded as an image instead
+   of being emitted as text. Embedded raster images already in the PDF
+   (plots, diagrams, logos) are extracted and placed the same way,
+   positioned by vertical order among the surrounding bullets. Plain prose
+   stays as real, flowing text. Pass `--no-images` to disable this and get
+   old-style plain-text-only extraction.
+7. Output: Markdown (`## title` + `- bullet` per line, `![](...)` for
+   rendered images, saved to a `<output>_images/` folder next to the
+   output file). Optional `--docx` flag also writes a Word file using
+   `Heading 2` + `List Bullet` styles, with images embedded inline.
 
 ## Dependencies
 
-- `pdfplumber` (required)
+- `pdfplumber` (required) — also pulls in `pypdfium2` and `Pillow`, used
+  for rasterizing pages/crops.
 - `python-docx` (only for `--docx` output)
 
 ## Usage
@@ -38,6 +56,7 @@ Pipeline:
 python slides_to_book.py input.pdf output.md
 python slides_to_book.py input.pdf output.md --docx
 python slides_to_book.py input.pdf output.md --min-ratio 0.4
+python slides_to_book.py input.pdf output.md --no-images
 ```
 
 ## Known limitations
@@ -45,12 +64,19 @@ python slides_to_book.py input.pdf output.md --min-ratio 0.4
 - Title detection assumes one font size clearly dominates per slide.
   Decks with uniform font sizes throughout will misclassify everything
   as a title.
-- Multi-column slide layouts can interleave lines out of order — grouping
-  is purely by vertical position, not reading order.
-- Text layer only. Diagrams, charts, and images are ignored entirely.
+- Multi-column slide layouts, and lines whose fragments overlap almost
+  the same vertical position, can interleave text out of true reading
+  order — grouping is purely by vertical position, not layout analysis.
+- Math-region detection is heuristic (symbol/size/operator based). It can
+  occasionally sweep a short plain-text line into a rendered image (mildly
+  wasteful, not incorrect) or, rarer, miss a math line that uses no
+  special symbols and matches the body font size.
 - Boilerplate detection matches after stripping a trailing page number,
   but fuzzy differences elsewhere in a footer (e.g. a changing date) still
   won't be caught.
+- Rendered images are cropped from a rasterized page (200 dpi default),
+  not vector-extracted, so they're raster PNGs even when the source was
+  vector art.
 
 ## Possible next steps
 
@@ -60,6 +86,5 @@ python slides_to_book.py input.pdf output.md --min-ratio 0.4
   number (e.g. footers with a changing date).
 - Reading-order reconstruction for multi-column slides (cluster by x0
   ranges before grouping by top position).
-- Optional image passthrough: extract embedded raster images
-  (`pdfimages`/PyMuPDF) and reinsert them near their slide's heading.
 - CLI batch mode: process a directory of PDFs into one merged book.
+- Configurable render resolution / image width for `--docx` output.
