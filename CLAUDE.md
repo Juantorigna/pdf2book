@@ -32,7 +32,15 @@ Pipeline:
 4. Page-number-only lines (`3`, `3/20`) are stripped via regex, but only
    inside the bottom ~15% of the page — a bare digit is also how Beamer
    renders `enumerate` list markers in the middle of a slide, and those are
-   real content, not a page number.
+   real content, not a page number. This kind of removal never sets where
+   the image-crop footer boundary sits (see step 6) — only the recurring
+   per-page footer/boilerplate line does. A page-number-only match is a
+   single bare digit with no recurring-text confirmation behind it, so on
+   a slide whose body text runs close to the bottom margin, a math
+   subscript (the `0` in a trailing `x_0`) can land in the footer zone and
+   be mistaken for one; letting that set the crop boundary would clip the
+   rendered image right through the slide's real last line instead of
+   just keeping it out of the actual footer.
 5. Title detection: on each page, the line(s) at the page's max font size
    become the heading; everything else is body content. A line is never a
    heading candidate, and never counted toward the max-size search, if it

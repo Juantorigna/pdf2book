@@ -143,6 +143,15 @@ def clean_pages(pages, min_ratio, page_heights):
     Page-number-only stripping is restricted to the bottom footer zone of the
     page: a bare "1" or "2" is also how Beamer renders enumerate-list markers
     in the middle of a slide, and those are real content, not a page number.
+
+    footer_tops is only ever seeded from boilerplate removals, never from a
+    lone page-number-only removal: a page-number fragment is a single bare
+    digit with no recurring-text confirmation behind it, so on a slide whose
+    body text runs close to the bottom margin, a math subscript (e.g. the
+    "0" in a trailing "x0") can land in the footer zone and be mistaken for
+    one. If that mistaken top were allowed to set footer_top, the image crop
+    for that math cluster would later be clipped there, cutting off the
+    slide's actual last line instead of just avoiding the real footer.
     """
     boilerplate = find_boilerplate_keys(pages, min_ratio)
 
@@ -151,17 +160,19 @@ def clean_pages(pages, min_ratio, page_heights):
     for lines, page_height in zip(pages, page_heights):
         footer_zone_top = FOOTER_ZONE_RATIO * page_height
         kept = []
-        removed_tops = []
+        boilerplate_tops = []
         for line in lines:
             text = line["text"]
             is_boilerplate = boilerplate_key(text) in boilerplate
             is_page_number = line["top"] >= footer_zone_top and PAGE_NUMBER_ONLY_RE.match(text)
-            if is_boilerplate or is_page_number:
-                removed_tops.append(line["top"])
+            if is_boilerplate:
+                boilerplate_tops.append(line["top"])
+                continue
+            if is_page_number:
                 continue
             kept.append(line)
         cleaned.append(kept)
-        footer_tops.append(min(removed_tops) if removed_tops else None)
+        footer_tops.append(min(boilerplate_tops) if boilerplate_tops else None)
     return cleaned, footer_tops
 
 
