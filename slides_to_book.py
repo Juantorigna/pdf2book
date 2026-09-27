@@ -173,6 +173,18 @@ def has_math_symbol(text):
     return any(ISOLATED_OPERATOR_RE.match(tok) for tok in text.split())
 
 
+# A slide title is a short label ("Matrices: Determinants", "Definition 2");
+# it never trails off with sentence-continuation punctuation. A body sentence
+# introducing a formula ("...is given by:") or a wrapped, punctuation-broken
+# fragment does. This catches heading-hijacking fragments that has_math_symbol
+# misses because they're plain digits/punctuation (an inline "(0, 1)" or
+# "(x, y)" reference) rather than a recognizable math symbol or operator, but
+# still carry the same spuriously large reported font size as a real title.
+def looks_like_heading(text):
+    stripped = text.rstrip()
+    return bool(stripped) and stripped[-1] not in ".:,;" and not has_math_symbol(text)
+
+
 def dominant_body_size(lines, heading_size):
     body_lines = [line for line in lines if line["size"] != heading_size]
     if not body_lines:
@@ -261,20 +273,24 @@ def build_slide_items(
 
     if lines:
         # Math/equation fragments (including glyphs pdfminer couldn't map to
-        # Unicode, e.g. bracket pieces from an inserted equation object) are
-        # excluded from heading detection: such a fragment can carry a
+        # Unicode, e.g. bracket pieces from an inserted equation object, or a
+        # plain digit/punctuation fragment like an inline "(x, y)" reference)
+        # are excluded from heading detection: such a fragment can carry a
         # spuriously large reported font size and would otherwise hijack the
         # "biggest font on the slide" heuristic, getting misclassified as the
-        # title and stripped out of the math cluster it actually belongs to.
-        heading_candidates = [line for line in lines if not has_math_symbol(line["text"])]
+        # title and stripped out of the math cluster (or plain sentence) it
+        # actually belongs to.
+        heading_candidates = [line for line in lines if looks_like_heading(line["text"])]
         heading_size = max(line["size"] for line in (heading_candidates or lines))
         titles = [
             line["text"]
             for line in lines
-            if line["size"] == heading_size and not has_math_symbol(line["text"])
+            if line["size"] == heading_size and looks_like_heading(line["text"])
         ]
         body_lines = [
-            line for line in lines if line["size"] != heading_size or has_math_symbol(line["text"])
+            line
+            for line in lines
+            if line["size"] != heading_size or not looks_like_heading(line["text"])
         ]
         body_size = dominant_body_size(lines, heading_size)
     else:

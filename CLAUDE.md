@@ -34,14 +34,21 @@ Pipeline:
    renders `enumerate` list markers in the middle of a slide, and those are
    real content, not a page number.
 5. Title detection: on each page, the line(s) at the page's max font size
-   become the heading; everything else is body content. Lines carrying a
-   math signal (see step 6) are never heading candidates and never counted
-   toward the max-size search, even if their reported font size is largest
-   on the page: an inserted equation object's bracket/frame glyphs can
-   report a spuriously large nominal size, and without this exclusion such
-   a fragment gets misclassified as the slide's title — pulling it out of
-   the math cluster it belongs to, so the rendered image for that formula
-   ends up missing the piece that was misread as a heading.
+   become the heading; everything else is body content. A line is never a
+   heading candidate, and never counted toward the max-size search, if it
+   carries a math signal (see step 6) or simply trails off with
+   sentence-continuation punctuation (`.`, `:`, `,`, `;`) — a real slide
+   title is a short label and is never phrased that way, but an
+   explanatory sentence introducing a formula ("...is given by:") often
+   is. Either way, the exclusion matters because an inline reference like
+   an inserted equation object's bracket glyphs, or even a bare `(x, y)` /
+   `(0, 1)` coordinate pair with no recognizable math symbol at all, can
+   report a spuriously large nominal font size — without this exclusion
+   such a fragment gets misclassified as the slide's title, either
+   stripping it out of the math cluster/sentence it actually belongs to
+   (so the rendered image or bullet ends up missing the piece that was
+   misread as a heading) or burying the real formula-introducing sentence
+   inside a garbled, wrongly-styled heading instead of a normal bullet.
 6. Math/diagram fidelity: PDF math (fractions, matrices, sub/superscripts)
    is a 2D arrangement of glyphs, not linear text — extracting it as text
    and reading top-to-bottom produces nonsense. So each slide's remaining
@@ -117,7 +124,10 @@ file doesn't exist yet, `--append` just creates it normally.
 
 - Title detection assumes one font size clearly dominates per slide.
   Decks with uniform font sizes throughout will misclassify everything
-  as a title.
+  as a title. The math-signal and trailing-punctuation exclusions catch
+  the inline-equation-fragment case, but a non-math, non-punctuated short
+  body fragment that happens to render at the same inflated size as the
+  page's real title (rare, but not impossible) would still slip through.
 - Word-boundary detection is still a geometric heuristic (gap-vs-font-size),
   not a real space-character check, because many source PDFs don't encode
   one. A deck with unusually tight justified body text can still need a
