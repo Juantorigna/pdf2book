@@ -75,6 +75,16 @@ this fraction of pages. Default is `0.5` (50%). Lower it if repeated
 boilerplate is slipping through; raise it if real content is being
 stripped by mistake.
 
+## Adjust word-boundary sensitivity
+
+```bash
+python slides_to_book.py Lesson_1.pdf Lesson_1.md --word-x-tolerance-ratio 0.05
+```
+Controls how big a horizontal gap between characters counts as a word
+break, as a fraction of font size. Default is `0.1`. Lower it if extracted
+text has words running together with no space (`AnIntroduction`); raise
+it if unrelated words are getting fused into one bullet.
+
 ## Skip image rendering (plain text only)
 
 ```bash
@@ -94,6 +104,7 @@ fast pass or a text-only deck with no real math/diagrams.
 | `--docx` | Also write a Word (`.docx`) version |
 | `--min-ratio <0-1>` | Repetition threshold for boilerplate stripping (default `0.5`) |
 | `--no-images` | Disable math/image rendering; plain text only |
+| `--word-x-tolerance-ratio <n>` | Word-boundary sensitivity, as a fraction of font size (default `0.1`) |
 | `--append` | Add to existing output files instead of overwriting them |
 
 ---

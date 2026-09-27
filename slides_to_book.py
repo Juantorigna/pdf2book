@@ -16,6 +16,19 @@ TRAILING_PAGE_NUMBER_RE = re.compile(r"\s*\d+\s*/\s*\d+\s*$|\s*\d+\s*$")
 # itself, mark a line as math (smart quotes, dashes, accents).
 SAFE_NON_ASCII = set("’‘“”–—´`")
 ISOLATED_OPERATOR_RE = re.compile(r"^[=+\-×÷±≤≥≠<>]$")
+# pdfminer's stand-in for a glyph it can't map to Unicode (e.g. a bracket
+# piece from an Office-inserted equation's symbol font). Always a sign the
+# "text" is actually a rendered math/graphic fragment, never real prose.
+CID_PLACEHOLDER_RE = re.compile(r"\(cid:\d+\)")
+
+# Default word-boundary tolerance, as a fraction of the preceding character's
+# font size (pdfplumber's x_tolerance_ratio). Many slide-deck PDFs don't
+# encode a literal space glyph between words, so pdfplumber has to infer word
+# breaks purely from the horizontal gap between characters; a fixed-size gap
+# (pdfplumber's absolute-point default) is too coarse across the range of
+# font sizes a slide mixes (titles vs. body), so words at body size can end
+# up glued together while larger titles happen to still split correctly.
+DEFAULT_WORD_X_TOLERANCE_RATIO = 0.1
 
 FOOTER_ZONE_RATIO = 0.85  # bottom fraction of the page treated as footer territory
 
@@ -33,7 +46,7 @@ def sanitize_filename_component(name):
     return NON_ALNUM_RE.sub("_", name).strip("_") or "doc"
 
 
-def extract_page_lines(pdf_path):
+def extract_page_lines(pdf_path, word_x_tolerance_ratio=DEFAULT_WORD_X_TOLERANCE_RATIO):
     """Return a list of pages, each a list of line dicts with text/size/bbox,
     plus a parallel list of each page's embedded raster images."""
     pages = []
@@ -41,7 +54,9 @@ def extract_page_lines(pdf_path):
     page_heights = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            words = page.extract_words(extra_attrs=["size"])
+            words = page.extract_words(
+                extra_attrs=["size"], x_tolerance_ratio=word_x_tolerance_ratio
+            )
             words.sort(key=lambda w: (w["top"], w["x0"]))
 
             groups = []
@@ -128,6 +143,8 @@ def clean_pages(pages, min_ratio, page_heights):
 
 
 def has_math_symbol(text):
+    if CID_PLACEHOLDER_RE.search(text):
+        return True
     if any((not ch.isascii()) and ch not in SAFE_NON_ASCII for ch in text):
         return True
     return any(ISOLATED_OPERATOR_RE.match(tok) for tok in text.split())
@@ -218,9 +235,22 @@ def build_slide_items(lines, images, page_index, renderer, footer_top):
         return [], []
 
     if lines:
-        heading_size = max(line["size"] for line in lines)
-        titles = [line["text"] for line in lines if line["size"] == heading_size]
-        body_lines = [line for line in lines if line["size"] != heading_size]
+        # Math/equation fragments (including glyphs pdfminer couldn't map to
+        # Unicode, e.g. bracket pieces from an inserted equation object) are
+        # excluded from heading detection: such a fragment can carry a
+        # spuriously large reported font size and would otherwise hijack the
+        # "biggest font on the slide" heuristic, getting misclassified as the
+        # title and stripped out of the math cluster it actually belongs to.
+        heading_candidates = [line for line in lines if not has_math_symbol(line["text"])]
+        heading_size = max(line["size"] for line in (heading_candidates or lines))
+        titles = [
+            line["text"]
+            for line in lines
+            if line["size"] == heading_size and not has_math_symbol(line["text"])
+        ]
+        body_lines = [
+            line for line in lines if line["size"] != heading_size or has_math_symbol(line["text"])
+        ]
         body_size = dominant_body_size(lines, heading_size)
     else:
         titles, body_lines, body_size = [], [], 0
@@ -317,8 +347,8 @@ def write_docx(docs, output_path, append=False):
     document.save(output_path)
 
 
-def process_pdf(pdf_path, min_ratio, image_dir, filename_prefix, use_images):
-    pages, page_images, page_heights = extract_page_lines(pdf_path)
+def process_pdf(pdf_path, min_ratio, image_dir, filename_prefix, use_images, word_x_tolerance_ratio):
+    pages, page_images, page_heights = extract_page_lines(pdf_path, word_x_tolerance_ratio)
     pages, footer_tops = clean_pages(pages, min_ratio, page_heights)
 
     renderer = None
@@ -361,6 +391,17 @@ def main():
         action="store_true",
         help="Append to output/--docx files instead of overwriting, if they already exist",
     )
+    parser.add_argument(
+        "--word-x-tolerance-ratio",
+        type=float,
+        default=DEFAULT_WORD_X_TOLERANCE_RATIO,
+        help=(
+            "Word-boundary sensitivity, as a fraction of font size (default: "
+            f"{DEFAULT_WORD_X_TOLERANCE_RATIO}). Lower this if extracted text has words "
+            "running together with no space; raise it if unrelated words are getting "
+            "fused into one bullet."
+        ),
+    )
     args = parser.parse_args()
 
     # A per-source heading disambiguates decks whenever more than one is
@@ -379,7 +420,14 @@ def main():
         # keeps image filenames from colliding across separate --append runs.
         unique_stem = stem if seen_stems[stem] == 1 else f"{stem}_{seen_stems[stem]}"
         prefix = f"{sanitize_filename_component(unique_stem)}_" if multi else ""
-        slides = process_pdf(pdf_path, args.min_ratio, image_dir, prefix, not args.no_images)
+        slides = process_pdf(
+            pdf_path,
+            args.min_ratio,
+            image_dir,
+            prefix,
+            not args.no_images,
+            args.word_x_tolerance_ratio,
+        )
         docs.append((stem if multi else None, slides))
 
     docx_path = None
