@@ -21,6 +21,12 @@ ISOLATED_OPERATOR_RE = re.compile(r"^[=+\-×÷±≤≥≠<>]$")
 # "text" is actually a rendered math/graphic fragment, never real prose.
 CID_PLACEHOLDER_RE = re.compile(r"\(cid:\d+\)")
 
+# A Beamer/PowerPoint cover slide (title, authors, affiliation, date) carries
+# an affiliation line essentially no genuine content slide does. Only ever
+# checked against a source PDF's first page, so it can't misfire on a later
+# slide that happens to mention a university in passing.
+TITLE_SLIDE_AFFILIATION_RE = re.compile(r"\b(?:department|university|college|institute)\s+of\b", re.IGNORECASE)
+
 # Default word-boundary tolerance, as a fraction of the preceding character's
 # font size (pdfplumber's x_tolerance_ratio). Many slide-deck PDFs don't
 # encode a literal space glyph between words, so pdfplumber has to infer word
@@ -120,6 +126,13 @@ def find_boilerplate_keys(pages, min_ratio):
 
     threshold = min_ratio * num_pages
     return {key for key, count in page_counts.items() if count >= threshold}
+
+
+def is_title_slide(lines):
+    """Heuristic for a Beamer/PowerPoint cover slide (deck title, authors,
+    department/university affiliation, date) as opposed to a real content
+    slide. Callers only apply this to a source PDF's own first page."""
+    return any(TITLE_SLIDE_AFFILIATION_RE.search(line["text"]) for line in lines)
 
 
 def clean_pages(pages, min_ratio, page_heights):
@@ -369,9 +382,14 @@ def process_pdf(
     use_images,
     word_x_tolerance_ratio,
     cluster_gap_ratio,
+    skip_title_slide,
 ):
     pages, page_images, page_heights = extract_page_lines(pdf_path, word_x_tolerance_ratio)
     pages, footer_tops = clean_pages(pages, min_ratio, page_heights)
+
+    if skip_title_slide and pages and is_title_slide(pages[0]):
+        pages[0] = []
+        page_images[0] = []
 
     renderer = None
     if use_images:
@@ -436,6 +454,15 @@ def main():
             "several images that don't make sense on their own."
         ),
     )
+    parser.add_argument(
+        "--keep-title-slide",
+        action="store_true",
+        help=(
+            "Keep each source PDF's first slide even when it looks like a cover/title "
+            "slide (deck title, authors, department/university affiliation, date). By "
+            "default this slide is dropped since it's not lecture content."
+        ),
+    )
     args = parser.parse_args()
 
     # A per-source heading disambiguates decks whenever more than one is
@@ -462,6 +489,7 @@ def main():
             not args.no_images,
             args.word_x_tolerance_ratio,
             args.cluster_gap_ratio,
+            not args.keep_title_slide,
         )
         docs.append((stem if multi else None, slides))
 

@@ -96,6 +96,15 @@ Default is `0.6`. Raise it if one formula or itemized list of definitions
 is being split across several images that don't make sense on their own;
 lower it if unrelated formulas are being merged into one image.
 
+## Keep each deck's title/cover slide
+
+```bash
+python slides_to_book.py Lesson_1.pdf Lesson_1.md --keep-title-slide
+```
+By default, each source PDF's first slide is dropped if it looks like a
+cover slide (deck title, authors, department/university affiliation,
+date) — it's not lecture content. Pass this flag to keep it.
+
 ## Skip image rendering (plain text only)
 
 ```bash
@@ -117,6 +126,7 @@ fast pass or a text-only deck with no real math/diagrams.
 | `--no-images` | Disable math/image rendering; plain text only |
 | `--word-x-tolerance-ratio <n>` | Word-boundary sensitivity, as a fraction of font size (default `0.1`) |
 | `--cluster-gap-ratio <n>` | How much math content gets grouped into one image, as a fraction of font size (default `0.6`) |
+| `--keep-title-slide` | Keep each source's cover/title slide instead of dropping it |
 | `--append` | Add to existing output files instead of overwriting them |
 
 ---

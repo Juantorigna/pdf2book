@@ -69,6 +69,15 @@ Pipeline:
    output file). Optional `--docx` flag also writes a Word file using
    `Heading 2` + `List Bullet` styles, with images embedded inline.
 
+Each source PDF's first slide is checked against a title-slide heuristic
+(a department/university affiliation line — `Department of ...`,
+`University of ...` — that a genuine content slide essentially never has)
+and dropped by default if it matches: it's the deck's cover slide (title,
+authors, affiliation, date), not lecture content, so it doesn't belong in
+a book of notes. Pass `--keep-title-slide` to keep it. Only ever checked
+against page one, so a later slide that happens to mention a university
+in passing is never at risk.
+
 ## Dependencies
 
 - `pdfplumber` (required) — also pulls in `pypdfium2` and `Pillow`, used
@@ -84,6 +93,7 @@ python slides_to_book.py input.pdf output.md --min-ratio 0.4
 python slides_to_book.py input.pdf output.md --no-images
 python slides_to_book.py input.pdf output.md --word-x-tolerance-ratio 0.05
 python slides_to_book.py input.pdf output.md --cluster-gap-ratio 0.8
+python slides_to_book.py input.pdf output.md --keep-title-slide
 
 # multiple PDFs are concatenated, in order, into one output
 python slides_to_book.py lesson1.pdf lesson2.pdf lesson3.pdf book.md --docx
@@ -132,6 +142,12 @@ file doesn't exist yet, `--append` just creates it normally.
 - Rendered images are cropped from a rasterized page (200 dpi default),
   not vector-extracted, so they're raster PNGs even when the source was
   vector art.
+- Title-slide detection is a single keyword heuristic (a department/
+  university affiliation line) checked only on each source's first page.
+  A cover slide without that phrasing (e.g. title/authors/date but no
+  institution line) won't be recognized and will pass through unless
+  removed by hand; a genuine first content slide that happens to name an
+  institution would be wrongly dropped (use `--keep-title-slide`).
 
 ## Possible next steps
 
