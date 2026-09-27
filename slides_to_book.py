@@ -33,7 +33,17 @@ DEFAULT_WORD_X_TOLERANCE_RATIO = 0.1
 FOOTER_ZONE_RATIO = 0.85  # bottom fraction of the page treated as footer territory
 
 SUBSCRIPT_SIZE_RATIO = 0.85
-CLUSTER_GAP_RATIO = 0.35
+# As a fraction of body font size: how much vertical whitespace separates two
+# lines before they're treated as visually distinct paragraphs rather than
+# the same flowing block. A math-heavy slide's natural single-line leading
+# (e.g. an itemized list of definitions, each wrapping across 1-2 lines) can
+# run close to 0.5x body size, so too low a ratio splits one coherent block
+# into a cluster per line/bullet -- each becomes its own tiny, out-of-context
+# rendered image. 0.6 keeps that kind of block together while still
+# separating genuinely distinct formulas, which tend to be spaced apart by
+# noticeably more (the vertical room LaTeX reserves for stacked notation like
+# summations, fractions, and matrices).
+DEFAULT_CLUSTER_GAP_RATIO = 0.6
 CLUSTER_GAP_MIN = 3.0
 
 RENDER_RESOLUTION = 200  # dpi used when rasterizing math/image regions
@@ -164,10 +174,10 @@ def is_math_line(line, body_size):
     return line["size"] < body_size * SUBSCRIPT_SIZE_RATIO
 
 
-def cluster_lines(lines, body_size):
+def cluster_lines(lines, body_size, cluster_gap_ratio=DEFAULT_CLUSTER_GAP_RATIO):
     if not lines:
         return []
-    gap_threshold = max(CLUSTER_GAP_MIN, CLUSTER_GAP_RATIO * body_size)
+    gap_threshold = max(CLUSTER_GAP_MIN, cluster_gap_ratio * body_size)
     clusters = [[lines[0]]]
     for line in lines[1:]:
         if line["top"] - clusters[-1][-1]["bottom"] > gap_threshold:
@@ -228,7 +238,9 @@ class ImageRenderer:
         return path
 
 
-def build_slide_items(lines, images, page_index, renderer, footer_top):
+def build_slide_items(
+    lines, images, page_index, renderer, footer_top, cluster_gap_ratio=DEFAULT_CLUSTER_GAP_RATIO
+):
     """Return (titles, items) where items is a top-sorted list of
     {'kind': 'bullet', 'text': ...} or {'kind': 'image', 'path': ...}."""
     if not lines and not images:
@@ -260,7 +272,7 @@ def build_slide_items(lines, images, page_index, renderer, footer_top):
         for line in body_lines:
             items.append({"top": line["top"], "kind": "bullet", "text": line["text"]})
     else:
-        for cluster in cluster_lines(body_lines, body_size):
+        for cluster in cluster_lines(body_lines, body_size, cluster_gap_ratio):
             if any(is_math_line(line, body_size) for line in cluster):
                 bbox = cluster_bbox(cluster)
                 path = renderer.crop(page_index, bbox, footer_top)
@@ -277,7 +289,7 @@ def build_slide_items(lines, images, page_index, renderer, footer_top):
     return titles, items
 
 
-def build_slides(pages, page_images, footer_tops, renderer):
+def build_slides(pages, page_images, footer_tops, renderer, cluster_gap_ratio=DEFAULT_CLUSTER_GAP_RATIO):
     """Build (titles, items) per slide. When a slide's title(s) exactly match
     the previous slide's, the heading is suppressed (titles becomes []) so the
     repeated title doesn't print again — its content just continues under the
@@ -286,7 +298,9 @@ def build_slides(pages, page_images, footer_tops, renderer):
     last_titles = None
     for page_index, lines in enumerate(pages):
         images = page_images[page_index] if renderer is not None else []
-        titles, items = build_slide_items(lines, images, page_index, renderer, footer_tops[page_index])
+        titles, items = build_slide_items(
+            lines, images, page_index, renderer, footer_tops[page_index], cluster_gap_ratio
+        )
         if not titles and not items:
             continue
         display_titles = [] if titles and titles == last_titles else titles
@@ -347,7 +361,15 @@ def write_docx(docs, output_path, append=False):
     document.save(output_path)
 
 
-def process_pdf(pdf_path, min_ratio, image_dir, filename_prefix, use_images, word_x_tolerance_ratio):
+def process_pdf(
+    pdf_path,
+    min_ratio,
+    image_dir,
+    filename_prefix,
+    use_images,
+    word_x_tolerance_ratio,
+    cluster_gap_ratio,
+):
     pages, page_images, page_heights = extract_page_lines(pdf_path, word_x_tolerance_ratio)
     pages, footer_tops = clean_pages(pages, min_ratio, page_heights)
 
@@ -356,7 +378,7 @@ def process_pdf(pdf_path, min_ratio, image_dir, filename_prefix, use_images, wor
         renderer = ImageRenderer(pdf_path, image_dir, filename_prefix=filename_prefix)
 
     try:
-        return build_slides(pages, page_images, footer_tops, renderer)
+        return build_slides(pages, page_images, footer_tops, renderer, cluster_gap_ratio)
     finally:
         if renderer is not None:
             renderer.close()
@@ -402,6 +424,18 @@ def main():
             "fused into one bullet."
         ),
     )
+    parser.add_argument(
+        "--cluster-gap-ratio",
+        type=float,
+        default=DEFAULT_CLUSTER_GAP_RATIO,
+        help=(
+            "How much vertical whitespace (as a fraction of body font size) separates "
+            f"two lines before a math region is split into its own image (default: "
+            f"{DEFAULT_CLUSTER_GAP_RATIO}). Lower this if unrelated formulas are being "
+            "merged into one image; raise it if one formula/list is being split across "
+            "several images that don't make sense on their own."
+        ),
+    )
     args = parser.parse_args()
 
     # A per-source heading disambiguates decks whenever more than one is
@@ -427,6 +461,7 @@ def main():
             prefix,
             not args.no_images,
             args.word_x_tolerance_ratio,
+            args.cluster_gap_ratio,
         )
         docs.append((stem if multi else None, slides))
 

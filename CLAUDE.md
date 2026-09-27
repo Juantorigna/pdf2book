@@ -45,13 +45,21 @@ Pipeline:
 6. Math/diagram fidelity: PDF math (fractions, matrices, sub/superscripts)
    is a 2D arrangement of glyphs, not linear text — extracting it as text
    and reading top-to-bottom produces nonsense. So each slide's remaining
-   lines are clustered into visual paragraphs (by vertical gap), and any
-   cluster containing a math signal (a non-ASCII math/Greek symbol, an
-   isolated operator token, an off-size sub/superscript line, or a glyph
-   pdfminer couldn't map to Unicode — rendered as a literal `(cid:NN)`
-   placeholder, typically a piece of an inserted equation object's symbol
-   font) is rasterized straight from the PDF page and embedded as an image instead
-   of being emitted as text. Embedded raster images already in the PDF
+   lines are clustered into visual paragraphs (by vertical gap — lines
+   closer together than `--cluster-gap-ratio` × body font size, default
+   0.6, stay in the same paragraph/image; a wider gap starts a new one),
+   and any cluster containing a math signal (a non-ASCII math/Greek
+   symbol, an isolated operator token, an off-size sub/superscript line,
+   or a glyph pdfminer couldn't map to Unicode — rendered as a literal
+   `(cid:NN)` placeholder, typically a piece of an inserted equation
+   object's symbol font) is rasterized straight from the PDF page and
+   embedded as an image instead of being emitted as text. The 0.6 default
+   is tuned so a math-heavy itemized list (each bullet its own short
+   paragraph, wrapped across 1-2 lines with tight leading) renders as one
+   coherent image instead of being sliced into one disconnected fragment
+   per line/bullet, while formulas that are genuinely distinct (the
+   larger vertical gaps LaTeX reserves around a summation, fraction, or
+   stacked matrix) still land in separate images. Embedded raster images already in the PDF
    (plots, diagrams, logos) are extracted and placed the same way,
    positioned by vertical order among the surrounding bullets. Plain prose
    stays as real, flowing text. Pass `--no-images` to disable this and get
@@ -75,6 +83,7 @@ python slides_to_book.py input.pdf output.md --docx
 python slides_to_book.py input.pdf output.md --min-ratio 0.4
 python slides_to_book.py input.pdf output.md --no-images
 python slides_to_book.py input.pdf output.md --word-x-tolerance-ratio 0.05
+python slides_to_book.py input.pdf output.md --cluster-gap-ratio 0.8
 
 # multiple PDFs are concatenated, in order, into one output
 python slides_to_book.py lesson1.pdf lesson2.pdf lesson3.pdf book.md --docx
@@ -112,6 +121,11 @@ file doesn't exist yet, `--append` just creates it normally.
   occasionally sweep a short plain-text line into a rendered image (mildly
   wasteful, not incorrect) or, rarer, miss a math line that uses no
   special symbols and matches the body font size.
+- Clustering is a single global gap threshold per page, not layout-aware.
+  A deck with much looser or tighter line spacing than typical Beamer/
+  PowerPoint output may need `--cluster-gap-ratio` adjusted to keep a
+  multi-line formula/list together (raise it) or stop unrelated formulas
+  from merging into one image (lower it).
 - Boilerplate detection matches after stripping a trailing page number,
   but fuzzy differences elsewhere in a footer (e.g. a changing date) still
   won't be caught.
