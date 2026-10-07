@@ -75,6 +75,36 @@ this fraction of pages. Default is `0.5` (50%). Lower it if repeated
 boilerplate is slipping through; raise it if real content is being
 stripped by mistake.
 
+## Adjust word-boundary sensitivity
+
+```bash
+python slides_to_book.py Lesson_1.pdf Lesson_1.md --word-x-tolerance-ratio 0.05
+```
+Controls how big a horizontal gap between characters counts as a word
+break, as a fraction of font size. Default is `0.1`. Lower it if extracted
+text has words running together with no space (`AnIntroduction`); raise
+it if unrelated words are getting fused into one word.
+
+## Adjust how much math content gets grouped into one image
+
+```bash
+python slides_to_book.py Lesson_1.pdf Lesson_1.md --cluster-gap-ratio 0.8
+```
+Controls how much vertical whitespace (as a fraction of body font size)
+separates two lines before a math region is split into its own image.
+Default is `0.6`. Raise it if one formula or itemized list of definitions
+is being split across several images that don't make sense on their own;
+lower it if unrelated formulas are being merged into one image.
+
+## Keep each deck's title/cover slide
+
+```bash
+python slides_to_book.py Lesson_1.pdf Lesson_1.md --keep-title-slide
+```
+By default, each source PDF's first slide is dropped if it looks like a
+cover slide (deck title, authors, department/university affiliation,
+date) — it's not lecture content. Pass this flag to keep it.
+
 ## Skip image rendering (plain text only)
 
 ```bash
@@ -94,6 +124,9 @@ fast pass or a text-only deck with no real math/diagrams.
 | `--docx` | Also write a Word (`.docx`) version |
 | `--min-ratio <0-1>` | Repetition threshold for boilerplate stripping (default `0.5`) |
 | `--no-images` | Disable math/image rendering; plain text only |
+| `--word-x-tolerance-ratio <n>` | Word-boundary sensitivity, as a fraction of font size (default `0.1`) |
+| `--cluster-gap-ratio <n>` | How much math content gets grouped into one image, as a fraction of font size (default `0.6`) |
+| `--keep-title-slide` | Keep each source's cover/title slide instead of dropping it |
 | `--append` | Add to existing output files instead of overwriting them |
 
 ---

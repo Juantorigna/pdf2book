@@ -9,12 +9,6 @@ from collections import Counter
 import pdfplumber
 
 Y_TOLERANCE = 3.0
-# Horizontal gap, as a fraction of the font size, above which two glyphs are
-# split into separate words. TeX-made PDFs contain no space glyphs, only
-# blank gaps (~0.2-0.33 em). pdfplumber's default is a fixed 3pt, which on a
-# small slide page with ~8pt body text is wider than the gap itself, so
-# every word in the line fuses into one ("Therearetwomethods...").
-X_TOLERANCE_RATIO = 0.1
 PAGE_NUMBER_ONLY_RE = re.compile(r"^\d+\s*/\s*\d+$|^\d+$")
 TRAILING_PAGE_NUMBER_RE = re.compile(r"\s*\d+\s*/\s*\d+\s*$|\s*\d+\s*$")
 
@@ -22,11 +16,40 @@ TRAILING_PAGE_NUMBER_RE = re.compile(r"\s*\d+\s*/\s*\d+\s*$|\s*\d+\s*$")
 # itself, mark a line as math (smart quotes, dashes, accents).
 SAFE_NON_ASCII = set("’‘“”–—´`")
 ISOLATED_OPERATOR_RE = re.compile(r"^[=+\-×÷±≤≥≠<>]$")
+# pdfminer's stand-in for a glyph it can't map to Unicode (e.g. a bracket
+# piece from an Office-inserted equation's symbol font). Always a sign the
+# "text" is actually a rendered math/graphic fragment, never real prose.
+CID_PLACEHOLDER_RE = re.compile(r"\(cid:\d+\)")
+
+# A Beamer/PowerPoint cover slide (title, authors, affiliation, date) carries
+# an affiliation line essentially no genuine content slide does. Only ever
+# checked against a source PDF's first page, so it can't misfire on a later
+# slide that happens to mention a university in passing.
+TITLE_SLIDE_AFFILIATION_RE = re.compile(r"\b(?:department|university|college|institute)\s+of\b", re.IGNORECASE)
+
+# Default word-boundary tolerance, as a fraction of the preceding character's
+# font size (pdfplumber's x_tolerance_ratio). Many slide-deck PDFs don't
+# encode a literal space glyph between words, so pdfplumber has to infer word
+# breaks purely from the horizontal gap between characters; a fixed-size gap
+# (pdfplumber's absolute-point default) is too coarse across the range of
+# font sizes a slide mixes (titles vs. body), so words at body size can end
+# up glued together while larger titles happen to still split correctly.
+DEFAULT_WORD_X_TOLERANCE_RATIO = 0.1
 
 FOOTER_ZONE_RATIO = 0.85  # bottom fraction of the page treated as footer territory
 
 SUBSCRIPT_SIZE_RATIO = 0.85
-CLUSTER_GAP_RATIO = 0.35
+# As a fraction of body font size: how much vertical whitespace separates two
+# lines before they're treated as visually distinct paragraphs rather than
+# the same flowing block. A math-heavy slide's natural single-line leading
+# (e.g. an itemized list of definitions, each wrapping across 1-2 lines) can
+# run close to 0.5x body size, so too low a ratio splits one coherent block
+# into a cluster per line/bullet -- each becomes its own tiny, out-of-context
+# rendered image. 0.6 keeps that kind of block together while still
+# separating genuinely distinct formulas, which tend to be spaced apart by
+# noticeably more (the vertical room LaTeX reserves for stacked notation like
+# summations, fractions, and matrices).
+DEFAULT_CLUSTER_GAP_RATIO = 0.6
 CLUSTER_GAP_MIN = 3.0
 WRAP_MARGIN_RATIO = 3.0  # a line ending within this many body-font sizes of the right margin counts as wrapped
 
@@ -40,7 +63,7 @@ def sanitize_filename_component(name):
     return NON_ALNUM_RE.sub("_", name).strip("_") or "doc"
 
 
-def extract_page_lines(pdf_path):
+def extract_page_lines(pdf_path, word_x_tolerance_ratio=DEFAULT_WORD_X_TOLERANCE_RATIO):
     """Return a list of pages, each a list of line dicts with text/size/bbox,
     plus a parallel list of each page's embedded raster images."""
     pages = []
@@ -48,7 +71,9 @@ def extract_page_lines(pdf_path):
     page_heights = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            words = page.extract_words(extra_attrs=["size"], x_tolerance_ratio=X_TOLERANCE_RATIO)
+            words = page.extract_words(
+                extra_attrs=["size"], x_tolerance_ratio=word_x_tolerance_ratio
+            )
             words.sort(key=lambda w: (w["top"], w["x0"]))
 
             groups = []
@@ -108,6 +133,13 @@ def find_boilerplate_keys(pages, min_ratio):
     return {key for key, count in page_counts.items() if count >= threshold}
 
 
+def is_title_slide(lines):
+    """Heuristic for a Beamer/PowerPoint cover slide (deck title, authors,
+    department/university affiliation, date) as opposed to a real content
+    slide. Callers only apply this to a source PDF's own first page."""
+    return any(TITLE_SLIDE_AFFILIATION_RE.search(line["text"]) for line in lines)
+
+
 def clean_pages(pages, min_ratio, page_heights):
     """Drop boilerplate and page-number-only lines. Returns cleaned pages plus,
     per page, the top of the highest removed line (a proxy for where a footer
@@ -116,6 +148,15 @@ def clean_pages(pages, min_ratio, page_heights):
     Page-number-only stripping is restricted to the bottom footer zone of the
     page: a bare "1" or "2" is also how Beamer renders enumerate-list markers
     in the middle of a slide, and those are real content, not a page number.
+
+    footer_tops is only ever seeded from boilerplate removals, never from a
+    lone page-number-only removal: a page-number fragment is a single bare
+    digit with no recurring-text confirmation behind it, so on a slide whose
+    body text runs close to the bottom margin, a math subscript (e.g. the
+    "0" in a trailing "x0") can land in the footer zone and be mistaken for
+    one. If that mistaken top were allowed to set footer_top, the image crop
+    for that math cluster would later be clipped there, cutting off the
+    slide's actual last line instead of just avoiding the real footer.
     """
     boilerplate = find_boilerplate_keys(pages, min_ratio)
 
@@ -124,24 +165,40 @@ def clean_pages(pages, min_ratio, page_heights):
     for lines, page_height in zip(pages, page_heights):
         footer_zone_top = FOOTER_ZONE_RATIO * page_height
         kept = []
-        removed_tops = []
+        boilerplate_tops = []
         for line in lines:
             text = line["text"]
             is_boilerplate = boilerplate_key(text) in boilerplate
             is_page_number = line["top"] >= footer_zone_top and PAGE_NUMBER_ONLY_RE.match(text)
-            if is_boilerplate or is_page_number:
-                removed_tops.append(line["top"])
+            if is_boilerplate:
+                boilerplate_tops.append(line["top"])
+                continue
+            if is_page_number:
                 continue
             kept.append(line)
         cleaned.append(kept)
-        footer_tops.append(min(removed_tops) if removed_tops else None)
+        footer_tops.append(min(boilerplate_tops) if boilerplate_tops else None)
     return cleaned, footer_tops
 
 
 def has_math_symbol(text):
+    if CID_PLACEHOLDER_RE.search(text):
+        return True
     if any((not ch.isascii()) and ch not in SAFE_NON_ASCII for ch in text):
         return True
     return any(ISOLATED_OPERATOR_RE.match(tok) for tok in text.split())
+
+
+# A slide title is a short label ("Matrices: Determinants", "Definition 2");
+# it never trails off with sentence-continuation punctuation. A body sentence
+# introducing a formula ("...is given by:") or a wrapped, punctuation-broken
+# fragment does. This catches heading-hijacking fragments that has_math_symbol
+# misses because they're plain digits/punctuation (an inline "(0, 1)" or
+# "(x, y)" reference) rather than a recognizable math symbol or operator, but
+# still carry the same spuriously large reported font size as a real title.
+def looks_like_heading(text):
+    stripped = text.rstrip()
+    return bool(stripped) and stripped[-1] not in ".:,;" and not has_math_symbol(text)
 
 
 def dominant_body_size(lines, heading_size):
@@ -163,10 +220,10 @@ def is_math_line(line, body_size):
     return line["size"] < body_size * SUBSCRIPT_SIZE_RATIO
 
 
-def cluster_lines(lines, body_size):
+def cluster_lines(lines, body_size, cluster_gap_ratio=DEFAULT_CLUSTER_GAP_RATIO):
     if not lines:
         return []
-    gap_threshold = max(CLUSTER_GAP_MIN, CLUSTER_GAP_RATIO * body_size)
+    gap_threshold = max(CLUSTER_GAP_MIN, cluster_gap_ratio * body_size)
     clusters = [[lines[0]]]
     for line in lines[1:]:
         if line["top"] - clusters[-1][-1]["bottom"] > gap_threshold:
@@ -263,22 +320,47 @@ def deck_right_edge(pages):
     return max(edges, default=0)
 
 
-def build_slide_items(lines, images, page_index, renderer, footer_top, right_edge):
+def build_slide_items(
+    lines,
+    images,
+    page_index,
+    renderer,
+    footer_top,
+    right_edge,
+    cluster_gap_ratio=DEFAULT_CLUSTER_GAP_RATIO,
+):
     """Return (titles, items) where items is a top-sorted list of
     {'kind': 'paragraph', 'text': ...} or {'kind': 'image', 'path': ...}."""
     if not lines and not images:
         return [], []
 
     if lines:
-        heading_size = max(line["size"] for line in lines)
-        titles = [line["text"] for line in lines if line["size"] == heading_size]
-        body_lines = [line for line in lines if line["size"] != heading_size]
+        # Math/equation fragments (including glyphs pdfminer couldn't map to
+        # Unicode, e.g. bracket pieces from an inserted equation object, or a
+        # plain digit/punctuation fragment like an inline "(x, y)" reference)
+        # are excluded from heading detection: such a fragment can carry a
+        # spuriously large reported font size and would otherwise hijack the
+        # "biggest font on the slide" heuristic, getting misclassified as the
+        # title and stripped out of the math cluster (or plain sentence) it
+        # actually belongs to.
+        heading_candidates = [line for line in lines if looks_like_heading(line["text"])]
+        heading_size = max(line["size"] for line in (heading_candidates or lines))
+        titles = [
+            line["text"]
+            for line in lines
+            if line["size"] == heading_size and looks_like_heading(line["text"])
+        ]
+        body_lines = [
+            line
+            for line in lines
+            if line["size"] != heading_size or not looks_like_heading(line["text"])
+        ]
         body_size = dominant_body_size(lines, heading_size)
     else:
         titles, body_lines, body_size = [], [], 0
 
     items = []
-    for cluster in cluster_lines(body_lines, body_size):
+    for cluster in cluster_lines(body_lines, body_size, cluster_gap_ratio):
         if renderer is not None and any(is_math_line(line, body_size) for line in cluster):
             bbox = cluster_bbox(cluster)
             path = renderer.crop(page_index, bbox, footer_top)
@@ -296,7 +378,7 @@ def build_slide_items(lines, images, page_index, renderer, footer_top, right_edg
     return titles, items
 
 
-def build_slides(pages, page_images, footer_tops, renderer):
+def build_slides(pages, page_images, footer_tops, renderer, cluster_gap_ratio=DEFAULT_CLUSTER_GAP_RATIO):
     """Build (titles, items) per slide. When a slide's title(s) exactly match
     the previous slide's, the heading is suppressed (titles becomes []) so the
     repeated title doesn't print again — its content just continues under the
@@ -307,7 +389,7 @@ def build_slides(pages, page_images, footer_tops, renderer):
     for page_index, lines in enumerate(pages):
         images = page_images[page_index] if renderer is not None else []
         titles, items = build_slide_items(
-            lines, images, page_index, renderer, footer_tops[page_index], right_edge
+            lines, images, page_index, renderer, footer_tops[page_index], right_edge, cluster_gap_ratio
         )
         if not titles and not items:
             continue
@@ -369,16 +451,29 @@ def write_docx(docs, output_path, append=False):
     document.save(output_path)
 
 
-def process_pdf(pdf_path, min_ratio, image_dir, filename_prefix, use_images):
-    pages, page_images, page_heights = extract_page_lines(pdf_path)
+def process_pdf(
+    pdf_path,
+    min_ratio,
+    image_dir,
+    filename_prefix,
+    use_images,
+    word_x_tolerance_ratio,
+    cluster_gap_ratio,
+    skip_title_slide,
+):
+    pages, page_images, page_heights = extract_page_lines(pdf_path, word_x_tolerance_ratio)
     pages, footer_tops = clean_pages(pages, min_ratio, page_heights)
+
+    if skip_title_slide and pages and is_title_slide(pages[0]):
+        pages[0] = []
+        page_images[0] = []
 
     renderer = None
     if use_images:
         renderer = ImageRenderer(pdf_path, image_dir, filename_prefix=filename_prefix)
 
     try:
-        return build_slides(pages, page_images, footer_tops, renderer)
+        return build_slides(pages, page_images, footer_tops, renderer, cluster_gap_ratio)
     finally:
         if renderer is not None:
             renderer.close()
@@ -413,6 +508,38 @@ def main():
         action="store_true",
         help="Append to output/--docx files instead of overwriting, if they already exist",
     )
+    parser.add_argument(
+        "--word-x-tolerance-ratio",
+        type=float,
+        default=DEFAULT_WORD_X_TOLERANCE_RATIO,
+        help=(
+            "Word-boundary sensitivity, as a fraction of font size (default: "
+            f"{DEFAULT_WORD_X_TOLERANCE_RATIO}). Lower this if extracted text has words "
+            "running together with no space; raise it if unrelated words are getting "
+            "fused into one word."
+        ),
+    )
+    parser.add_argument(
+        "--cluster-gap-ratio",
+        type=float,
+        default=DEFAULT_CLUSTER_GAP_RATIO,
+        help=(
+            "How much vertical whitespace (as a fraction of body font size) separates "
+            f"two lines before a math region is split into its own image (default: "
+            f"{DEFAULT_CLUSTER_GAP_RATIO}). Lower this if unrelated formulas are being "
+            "merged into one image; raise it if one formula/list is being split across "
+            "several images that don't make sense on their own."
+        ),
+    )
+    parser.add_argument(
+        "--keep-title-slide",
+        action="store_true",
+        help=(
+            "Keep each source PDF's first slide even when it looks like a cover/title "
+            "slide (deck title, authors, department/university affiliation, date). By "
+            "default this slide is dropped since it's not lecture content."
+        ),
+    )
     args = parser.parse_args()
 
     # A per-source heading disambiguates decks whenever more than one is
@@ -431,7 +558,16 @@ def main():
         # keeps image filenames from colliding across separate --append runs.
         unique_stem = stem if seen_stems[stem] == 1 else f"{stem}_{seen_stems[stem]}"
         prefix = f"{sanitize_filename_component(unique_stem)}_" if multi else ""
-        slides = process_pdf(pdf_path, args.min_ratio, image_dir, prefix, not args.no_images)
+        slides = process_pdf(
+            pdf_path,
+            args.min_ratio,
+            image_dir,
+            prefix,
+            not args.no_images,
+            args.word_x_tolerance_ratio,
+            args.cluster_gap_ratio,
+            not args.keep_title_slide,
+        )
         docs.append((stem if multi else None, slides))
 
     docx_path = None
