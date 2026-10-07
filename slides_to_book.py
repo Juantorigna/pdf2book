@@ -9,6 +9,12 @@ from collections import Counter
 import pdfplumber
 
 Y_TOLERANCE = 3.0
+# Horizontal gap, as a fraction of the font size, above which two glyphs are
+# split into separate words. TeX-made PDFs contain no space glyphs, only
+# blank gaps (~0.2-0.33 em). pdfplumber's default is a fixed 3pt, which on a
+# small slide page with ~8pt body text is wider than the gap itself, so
+# every word in the line fuses into one ("Therearetwomethods...").
+X_TOLERANCE_RATIO = 0.1
 PAGE_NUMBER_ONLY_RE = re.compile(r"^\d+\s*/\s*\d+$|^\d+$")
 TRAILING_PAGE_NUMBER_RE = re.compile(r"\s*\d+\s*/\s*\d+\s*$|\s*\d+\s*$")
 
@@ -42,7 +48,7 @@ def extract_page_lines(pdf_path):
     page_heights = []
     with pdfplumber.open(pdf_path) as pdf:
         for page in pdf.pages:
-            words = page.extract_words(extra_attrs=["size"])
+            words = page.extract_words(extra_attrs=["size"], x_tolerance_ratio=X_TOLERANCE_RATIO)
             words.sort(key=lambda w: (w["top"], w["x0"]))
 
             groups = []

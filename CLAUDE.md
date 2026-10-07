@@ -14,6 +14,11 @@ Single script: `slides_to_book.py`. No packaging, no tests yet.
 
 Pipeline:
 1. `pdfplumber` extracts words per page, each with font size and position.
+   Word boundaries use a gap threshold proportional to font size
+   (`X_TOLERANCE_RATIO`, 0.1 em) instead of pdfplumber's fixed 3pt. TeX
+   PDFs have no space glyphs, only blank gaps, and on small slide pages the
+   gap between words in ~8pt body text is under 3pt, which fused whole lines
+   into one word.
 2. Words within ~3pt of vertical position are grouped into lines.
 3. Boilerplate removal: any line whose exact text repeats on ≥50% of pages
    (`--min-ratio` to adjust) is dropped from every page. Catches uni name,
