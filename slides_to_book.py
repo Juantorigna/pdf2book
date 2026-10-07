@@ -22,6 +22,7 @@ FOOTER_ZONE_RATIO = 0.85  # bottom fraction of the page treated as footer territ
 SUBSCRIPT_SIZE_RATIO = 0.85
 CLUSTER_GAP_RATIO = 0.35
 CLUSTER_GAP_MIN = 3.0
+WRAP_MARGIN_RATIO = 3.0  # a line ending within this many body-font sizes of the right margin counts as wrapped
 
 RENDER_RESOLUTION = 200  # dpi used when rasterizing math/image regions
 CROP_PAD = 4  # points of padding around a cropped region
@@ -58,6 +59,10 @@ def extract_page_lines(pdf_path):
 
             lines = []
             for group in groups:
+                # Within a line, read left to right. The earlier global sort
+                # was by `top` first, so a glyph a fraction of a point higher
+                # (a comma, an ellipsis) could jump ahead of the word before it.
+                group.sort(key=lambda w: w["x0"])
                 text = " ".join(w["text"] for w in group)
                 lines.append(
                     {
@@ -137,7 +142,12 @@ def dominant_body_size(lines, heading_size):
     body_lines = [line for line in lines if line["size"] != heading_size]
     if not body_lines:
         return heading_size
-    sizes = Counter(round(line["size"], 1) for line in body_lines)
+    # Weight by character count, not by line count: a slide with inline math
+    # has many tiny subscript lines ("1 n") that can outnumber the prose
+    # lines, and the subscript size would then be mistaken for the body size.
+    sizes = Counter()
+    for line in body_lines:
+        sizes[round(line["size"], 1)] += len(line["text"])
     return sizes.most_common(1)[0][0]
 
 
@@ -158,6 +168,30 @@ def cluster_lines(lines, body_size):
         else:
             clusters[-1].append(line)
     return clusters
+
+
+def merge_wrapped_lines(cluster, right_edge, body_size):
+    """Join visually wrapped lines of one cluster into paragraphs.
+
+    A line is a continuation of the previous one when the previous line ran
+    up to the right text margin (so it wrapped, rather than ended on its own)
+    and the new line starts at the same left edge (so it isn't an indented
+    item). Short lines that stop well before the margin stay separate."""
+    tolerance = WRAP_MARGIN_RATIO * body_size
+    paragraphs = []
+    for line in cluster:
+        if paragraphs:
+            prev = paragraphs[-1]
+            wrapped = prev["x1"] >= right_edge - tolerance
+            aligned = abs(line["x0"] - prev["x0"]) <= body_size
+            if wrapped and aligned:
+                prev["text"] += " " + line["text"]
+                prev["x1"] = line["x1"]
+                continue
+        paragraphs.append(
+            {"text": line["text"], "top": line["top"], "x0": line["x0"], "x1": line["x1"]}
+        )
+    return paragraphs
 
 
 def cluster_bbox(cluster):
@@ -211,9 +245,21 @@ class ImageRenderer:
         return path
 
 
-def build_slide_items(lines, images, page_index, renderer, footer_top):
+def deck_right_edge(pages):
+    """Right-most x1 of any non-title line in the deck: a proxy for the text
+    margin that wrapped lines run up against."""
+    edges = []
+    for lines in pages:
+        if not lines:
+            continue
+        heading_size = max(line["size"] for line in lines)
+        edges.extend(line["x1"] for line in lines if line["size"] != heading_size)
+    return max(edges, default=0)
+
+
+def build_slide_items(lines, images, page_index, renderer, footer_top, right_edge):
     """Return (titles, items) where items is a top-sorted list of
-    {'kind': 'bullet', 'text': ...} or {'kind': 'image', 'path': ...}."""
+    {'kind': 'paragraph', 'text': ...} or {'kind': 'image', 'path': ...}."""
     if not lines and not images:
         return [], []
 
@@ -226,19 +272,16 @@ def build_slide_items(lines, images, page_index, renderer, footer_top):
         titles, body_lines, body_size = [], [], 0
 
     items = []
-    if renderer is None:
-        for line in body_lines:
-            items.append({"top": line["top"], "kind": "bullet", "text": line["text"]})
-    else:
-        for cluster in cluster_lines(body_lines, body_size):
-            if any(is_math_line(line, body_size) for line in cluster):
-                bbox = cluster_bbox(cluster)
-                path = renderer.crop(page_index, bbox, footer_top)
-                items.append({"top": bbox["top"], "kind": "image", "path": path})
-            else:
-                for line in cluster:
-                    items.append({"top": line["top"], "kind": "bullet", "text": line["text"]})
+    for cluster in cluster_lines(body_lines, body_size):
+        if renderer is not None and any(is_math_line(line, body_size) for line in cluster):
+            bbox = cluster_bbox(cluster)
+            path = renderer.crop(page_index, bbox, footer_top)
+            items.append({"top": bbox["top"], "kind": "image", "path": path})
+        else:
+            for paragraph in merge_wrapped_lines(cluster, right_edge, body_size):
+                items.append({"top": paragraph["top"], "kind": "paragraph", "text": paragraph["text"]})
 
+    if renderer is not None:
         for image in images:
             path = renderer.crop(page_index, image, footer_top)
             items.append({"top": image["top"], "kind": "image", "path": path})
@@ -254,9 +297,12 @@ def build_slides(pages, page_images, footer_tops, renderer):
     last-printed heading, until a genuinely new title appears."""
     slides = []
     last_titles = None
+    right_edge = deck_right_edge(pages)
     for page_index, lines in enumerate(pages):
         images = page_images[page_index] if renderer is not None else []
-        titles, items = build_slide_items(lines, images, page_index, renderer, footer_tops[page_index])
+        titles, items = build_slide_items(
+            lines, images, page_index, renderer, footer_tops[page_index], right_edge
+        )
         if not titles and not items:
             continue
         display_titles = [] if titles and titles == last_titles else titles
@@ -282,8 +328,8 @@ def write_markdown(docs, output_path, append=False):
                 for title in titles:
                     f.write(f"## {title}\n\n")
                 for item in items:
-                    if item["kind"] == "bullet":
-                        f.write(f"- {item['text']}\n")
+                    if item["kind"] == "paragraph":
+                        f.write(f"{item['text']}\n\n")
                     else:
                         rel = relative_path(item["path"], output_path)
                         f.write(f"\n![]({rel})\n\n")
@@ -308,8 +354,8 @@ def write_docx(docs, output_path, append=False):
             for title in titles:
                 document.add_paragraph(title, style="Heading 2")
             for item in items:
-                if item["kind"] == "bullet":
-                    document.add_paragraph(item["text"], style="List Bullet")
+                if item["kind"] == "paragraph":
+                    document.add_paragraph(item["text"])
                 else:
                     with Image.open(item["path"]) as im:
                         width_in = im.width / RENDER_RESOLUTION

@@ -36,13 +36,21 @@ Pipeline:
    rasterized straight from the PDF page and embedded as an image instead
    of being emitted as text. Embedded raster images already in the PDF
    (plots, diagrams, logos) are extracted and placed the same way,
-   positioned by vertical order among the surrounding bullets. Plain prose
-   stays as real, flowing text. Pass `--no-images` to disable this and get
-   old-style plain-text-only extraction.
-7. Output: Markdown (`## title` + `- bullet` per line, `![](...)` for
-   rendered images, saved to a `<output>_images/` folder next to the
-   output file). Optional `--docx` flag also writes a Word file using
-   `Heading 2` + `List Bullet` styles, with images embedded inline.
+   positioned by vertical order among the surrounding paragraphs. Plain
+   prose stays as real, flowing text. Pass `--no-images` to disable this and
+   get old-style plain-text-only extraction. The "is this off-size?" check
+   compares against the body font size, taken as the size covering the most
+   *characters* on the slide (not the most lines), so short subscript lines
+   can't be mistaken for the body size.
+7. Paragraph merging: within a non-math cluster, a line is joined to the
+   previous one when the previous line ran up to the deck's right text
+   margin (within `WRAP_MARGIN_RATIO` body-font sizes) and the new line
+   starts at the same left edge. This turns visually wrapped prose back into
+   one paragraph; short lines that stop before the margin stay separate.
+8. Output: Markdown (`## title` + one paragraph per block of text,
+   `![](...)` for rendered images, saved to a `<output>_images/` folder next
+   to the output file). Optional `--docx` flag also writes a Word file using
+   `Heading 2` + `Normal` paragraph styles, with images embedded inline.
 
 ## Dependencies
 
@@ -97,8 +105,9 @@ file doesn't exist yet, `--append` just creates it normally.
 
 ## Possible next steps
 
-- Detect and preserve nested bullet levels (currently flattened to one
-  list level).
+- Detect real list items (bullet/number markers, indentation) and emit
+  them as nested lists; currently all text is emitted as plain paragraphs,
+  so an itemized slide's items appear as consecutive short paragraphs.
 - Fuzzy-match near-duplicate boilerplate lines beyond a trailing page
   number (e.g. footers with a changing date).
 - Reading-order reconstruction for multi-column slides (cluster by x0
